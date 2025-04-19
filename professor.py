@@ -1,116 +1,141 @@
 import streamlit as st
 import pandas as pd
-import os
-import io
-from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode
+from datetime import datetime
 
-# === Load saved data ===
-if 'professors' not in st.session_state:
-    if os.path.exists("data.csv"):
-        st.session_state.professors = pd.read_csv("data.csv").to_dict(orient="records")
-    else:
-        st.session_state.professors = []
-
+st.set_page_config(page_title="Assistantship Tracker", layout="wide")
 st.title("📚 Professor Assistantship Tracker")
 
-# === Excel Import ===
-st.sidebar.subheader("📤 Import Excel (.xlsx)")
-uploaded_file = st.sidebar.file_uploader("Choose Excel file", type=["xlsx"])
+# Custom styles for dropdowns and table
+st.markdown(
+    """
+    <style>
+    .dropdown-enhanced select {
+        font-size: 13px !important;
+        padding: 3px 5px;
+        background-color: #f8f9fa;
+        border: 1px solid #ccc;
+        border-radius: 6px;
+        width: 100%;
+    }
+    .table-header {
+        font-weight: bold;
+        background-color: #e8f0fe;
+        border-bottom: 2px solid #ccc;
+        padding: 10px 0;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
 
-if uploaded_file:
-    try:
-        df_uploaded = pd.read_excel(uploaded_file)
-        added_count = 0
+# Initialize session state
+def init_session():
+    if "professors" not in st.session_state:
+        st.session_state.professors = pd.DataFrame(columns=[
+            "Professor Name", "Professor Mail", "Professor Department", "Status", "Opportunity"
+        ])
+init_session()
 
-        for _, row in df_uploaded.iterrows():
-            name = str(row.get("Name", "")).strip()
-            email = str(row.get("Email", "")).strip().lower()
-            dept = str(row.get("Department", "")).strip()
-            status = str(row.get("Status", "Applied")).strip()
-            chance = str(row.get("Chance", "❌ Not an Opportunity")).strip()
+# Sidebar for adding new professor and import/export
+with st.sidebar:
+    st.header("➕ Add / Manage Professors")
+    with st.form("add_prof_form"):
+        name = st.text_input("Professor Name")
+        email_cols = st.columns([4, 1])
+        email_input = email_cols[0].text_input("Professor Mail", placeholder="e.g., jdoe")
+        email_cols[1].markdown("<div style='margin-top: 2em;'>@uh.edu</div>", unsafe_allow_html=True)
+        email = email_input.strip()
+        if email:
+            email = email.replace("@uh.edu", "")  # prevent double extension
+            email += "@uh.edu"
+        dept = st.text_input("Professor Department")
+        submitted = st.form_submit_button("Add Professor")
 
-            if email.endswith("@uh.edu") and not any(p['Email'].lower() == email for p in st.session_state.professors):
-                st.session_state.professors.append({
-                    "Name": name,
-                    "Email": email,
-                    "Department": dept,
-                    "Status": status if status in ["Applied", "Replied"] else "Applied",
-                    "Chance": chance if chance in ["✅ Opportunity", "❌ Not an Opportunity"] else "❌ Not an Opportunity"
-                })
-                added_count += 1
+        if submitted:
+            # Check for duplicates by email
+            if email not in st.session_state.professors['Professor Mail'].values:
+                new_prof = pd.DataFrame([[name, email, dept, "Applied", "❌ Not"]],
+                                        columns=st.session_state.professors.columns)
+                st.session_state.professors = pd.concat([st.session_state.professors, new_prof], ignore_index=True)
+                st.success("Professor added successfully!")
+            else:
+                st.warning("Duplicate entry: Professor with this email already exists.")
 
-        st.sidebar.success(f"✅ Imported {added_count} new professors.")
-    except Exception as e:
-        st.sidebar.error(f"❌ Failed to read file: {e}")
+    st.markdown("---")
+    st.subheader("📤 Export List")
+    import io
+    excel_buffer = io.BytesIO()
+    with pd.ExcelWriter(excel_buffer, engine='xlsxwriter') as writer:
+        st.session_state.professors.to_excel(writer, index=False, sheet_name='Professors')
+        
+    st.download_button("Download as Excel", data=excel_buffer.getvalue(), file_name="professors.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-# === Add Form ===
-st.sidebar.header("Add Professor Manually")
-with st.sidebar.form("add_professor_form", clear_on_submit=True):
-    name = st.text_input("👤 Name")
-    email = st.text_input("📧 Email (must end with @uh.edu)")
-    dept = st.text_input("🏛️ Department")
-
-    submitted = st.form_submit_button("➕ Add Professor")
-
-    if submitted:
-        email_lower = email.lower()
-        if not name or not email or not dept:
-            st.sidebar.error("❌ All fields are required.")
-        elif not email_lower.endswith("@uh.edu"):
-            st.sidebar.error("❌ Email must end with '@uh.edu'")
-        elif any(p['Email'].lower() == email_lower for p in st.session_state.professors):
-            st.sidebar.error(f"❌ Professor with email `{email}` already exists!")
+    st.markdown("---")
+    st.subheader("📥 Import List")
+    uploaded_file = st.file_uploader("Upload File", type=["csv", "xlsx"])
+    if uploaded_file is not None:
+        if uploaded_file.name.endswith('.csv'):
+            uploaded_df = pd.read_csv(uploaded_file)
         else:
-            st.session_state.professors.append({
-                "Name": name,
-                "Email": email,
-                "Department": dept,
-                "Status": "Applied",
-                "Chance": "❌ Not an Opportunity"
-            })
-            st.sidebar.success(f"✅ `{name}` added successfully!")
+            uploaded_df = pd.read_excel(uploaded_file)
 
-# === Display and Edit with AgGrid ===
-st.subheader("📋 Current List of Professors")
+        st.session_state.professors = pd.concat(
+            [st.session_state.professors, uploaded_df]
+        ).drop_duplicates(
+            subset="Professor Mail", keep="first"
+        ).reset_index(drop=True)
 
-if st.session_state.professors:
-    df = pd.DataFrame(st.session_state.professors)
+        st.success("File imported successfully!")
 
-    gb = GridOptionsBuilder.from_dataframe(df)
-    gb.configure_default_column(sortable=True, filter=True, editable=False)
-    gb.configure_column("Status", editable=True, cellEditor='agSelectCellEditor',
-                        cellEditorParams={"values": ["Applied", "Replied"]})
-    gb.configure_column("Chance", editable=True, cellEditor='agSelectCellEditor',
-                        cellEditorParams={"values": ["✅ Opportunity", "❌ Not an Opportunity"]})
-    gb.configure_selection('single')
+# Main panel: display the table with styling
+if not st.session_state.professors.empty:
+    st.markdown("### 📄 Tracked Professors")
+    sort_column = st.selectbox("Sort by", st.session_state.professors.columns.tolist(), index=0)
+    sort_order = st.radio("Order", ["Ascending", "Descending"], horizontal=True)
 
-    grid_options = gb.build()
+    df_sorted = st.session_state.professors.sort_values(by=sort_column, ascending=(sort_order == "Ascending"))
 
-    grid_response = AgGrid(
-        df,
-        gridOptions=grid_options,
-        update_mode=GridUpdateMode.MODEL_CHANGED,
-        fit_columns_on_grid_load=True,
-        enable_enterprise_modules=False,
-        height=400,
-        theme='streamlit',  # or 'alpine'
-    )
+    # Table header
+    header_cols = st.columns([3, 3, 3, 2, 2, 1])
+    header_cols[0].markdown("<div class='table-header'>Professor Name</div>", unsafe_allow_html=True)
+    header_cols[1].markdown("<div class='table-header'>Professor Mail</div>", unsafe_allow_html=True)
+    header_cols[2].markdown("<div class='table-header'>Department</div>", unsafe_allow_html=True)
+    header_cols[3].markdown("<div class='table-header'>Status</div>", unsafe_allow_html=True)
+    header_cols[4].markdown("<div class='table-header'>Opportunity</div>", unsafe_allow_html=True)
+    header_cols[5].markdown("<div class='table-header'>Delete</div>", unsafe_allow_html=True)
 
-    # Save edited table back to session
-    updated_df = grid_response['data']
-    st.session_state.professors = updated_df.to_dict(orient="records")
-    updated_df.to_csv("data.csv", index=False)
+    # Table rows
+    for i, row in df_sorted.iterrows():
+        cols = st.columns([3, 3, 3, 2, 2, 1])
+        cols[0].markdown(f"**{row['Professor Name']}**")
+        cols[1].markdown(f"{row['Professor Mail']}")
+        cols[2].write(row['Professor Department'])
 
-    # Export to Excel
-    buffer = io.BytesIO()
-    with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
-        updated_df.to_excel(writer, index=False, sheet_name='Professors')
+        with cols[3]:
+            st.markdown("<div class='dropdown-enhanced'>", unsafe_allow_html=True)
+            status = st.selectbox(
+                label="", label_visibility="collapsed",
+                options=["Applied", "Replied"],
+                index=["Applied", "Replied"].index(row["Status"]),
+                key=f"status_{i}"
+            )
+            st.markdown("</div>", unsafe_allow_html=True)
+            st.session_state.professors.at[i, "Status"] = status
 
-    st.download_button(
-        label="📥 Download as Excel",
-        data=buffer.getvalue(),
-        file_name="professor_list.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+        with cols[4]:
+            st.markdown("<div class='dropdown-enhanced'>", unsafe_allow_html=True)
+            opportunity = st.selectbox(
+                label="", label_visibility="collapsed",
+                options=["❌ Not", "✅ Has"],
+                index=["❌ Not", "✅ Has"].index(row["Opportunity"]),
+                key=f"opportunity_{i}"
+            )
+            st.markdown("</div>", unsafe_allow_html=True)
+            st.session_state.professors.at[i, "Opportunity"] = opportunity
+
+        with cols[5]:
+            if st.button("🗑️", key=f"del_{row['Professor Mail']}"):
+                st.session_state.professors = st.session_state.professors[st.session_state.professors['Professor Mail'] != row['Professor Mail']]
+                st.rerun()
 else:
-    st.info("No professors added yet.")
+    st.info("No professors added yet. Use the sidebar to begin tracking.")
